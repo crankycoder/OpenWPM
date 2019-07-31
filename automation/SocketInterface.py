@@ -7,13 +7,16 @@ import threading
 import traceback
 
 import dill
+import socketio
 import six
 from six.moves import input
 from six.moves.queue import Queue
 
 if six.PY2:
+
     class ConnectionAbortedError(Exception):
         pass
+
 
 # TODO - Implement a cleaner shutdown for server socket
 # see: https://stackoverflow.com/a/1148237
@@ -27,7 +30,7 @@ class serversocket:
 
     def __init__(self, name=None, verbose=False):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.bind(('localhost', 0))
+        self.sock.bind(("localhost", 0))
         self.sock.listen(10)  # queue a max of n connect requests
         self.verbose = verbose
         self.name = name
@@ -124,17 +127,17 @@ class clientsocket:
             * 'json' uses the json module. Cross-language support. (default)
             * 'dill' uses the dill pickle module. Python only.
         """
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if serialization != 'json' and serialization != 'dill':
-            raise ValueError(
-                "Unsupported serialization type: %s" % serialization)
+        if serialization != "json" and serialization != "dill":
+            raise ValueError("Unsupported serialization type: %s" % serialization)
         self.serialization = serialization
         self.verbose = verbose
+
+        self._sio = socketio.Client()
 
     def connect(self, host, port):
         if self.verbose:
             print("Connecting to: %s:%i" % (host, port))
-        self.sock.connect((host, port))
+        self._sio.connect("http://{}:{}".format(host, port))
 
     def send(self, msg):
         """
@@ -142,7 +145,6 @@ class clientsocket:
         using dill if not string, and prepends msg len (4-bytes) and
         serialization type (1-byte).
         """
-        import six
         if isinstance(msg, six.binary_type):
             serialization = b'n'
         elif isinstance(msg, six.text_type):
@@ -162,16 +164,11 @@ class clientsocket:
             print("Sending message with serialization %s" % serialization)
 
         # prepend with message length
-        msg = struct.pack('>Lc', len(msg), serialization) + msg
-        totalsent = 0
-        while totalsent < len(msg):
-            sent = self.sock.send(msg[totalsent:])
-            if sent == 0:
-                raise RuntimeError("socket connection broken")
-            totalsent = totalsent + sent
+        msg = struct.pack(">Lc", len(msg), serialization) + msg
+        self._sio.send(msg)
 
     def close(self):
-        self.sock.close()
+        pass
 
 
 def main():
