@@ -1,12 +1,11 @@
 from __future__ import absolute_import, print_function
 
 import json
-import socket
 import struct
-import threading
 import traceback
 
 import dill
+import eventlet
 import socketio
 import six
 from six.moves import input
@@ -29,98 +28,49 @@ class serversocket:
     """
 
     def __init__(self, name=None, verbose=False):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.bind(("localhost", 0))
-        self.sock.listen(10)  # queue a max of n connect requests
         self.verbose = verbose
         self.name = name
         self.queue = Queue()
         if self.verbose:
             print("Server bound to: " + str(self.sock.getsockname()))
+        self._sio = socketio.Server()
 
     def start_accepting(self):
         """ Start the listener thread """
-        thread = threading.Thread(target=self._accept, args=())
-        thread.daemon = True  # stops from blocking shutdown
-        if self.name is not None:
-            thread.name = thread.name + "-" + self.name
-        thread.start()
+        self._sio_app = socketio.WSGIApp(self._sio)
 
-    def _accept(self):
-        """ Listen for connections and pass handling to a new thread """
-        while True:
-            try:
-                (client, address) = self.sock.accept()
-                thread = threading.Thread(
-                    target=self._handle_conn, args=(client, address)
-                )
-                thread.daemon = True
-                thread.start()
-            except ConnectionAbortedError:
-                # Workaround for #278
-                print(
-                    "A connection establish request was performed "
-                    + "on a closed socket"
-                )
-                return
+        # TODO: host/port for socketio server needs to be extracted
+        # using python-decouple
+        eventlet.wsgi.server(eventlet.listen(("", 5000)), self._sio_app)
 
-    def _handle_conn(self, client, address):
-        """
-        Receive messages and pass to queue. Messages are prefixed with
-        a 4-byte integer to specify the message length and 1-byte character
-        to indicate the type of serialization applied to the message.
-
-        Supported serialization formats:
-            'n' : no serialization
-            'u' : Unicode string in UTF-8
-            'd' : dill pickle
-            'j' : json
-        """
+    @sio.event
+    def handle_message(self, sid, msg):
+        msglen, serialization = struct.unpack(">Lc", msg)
         if self.verbose:
-            print("Thread: %s connected to: %s" % (threading.current_thread(), address))
-        try:
-            while True:
-                msg = self.receive_msg(client, 5)
-                msglen, serialization = struct.unpack(">Lc", msg)
-                if self.verbose:
-                    print(
-                        "Received message, length %d, serialization %r"
-                        % (msglen, serialization)
-                    )
-                msg = self.receive_msg(client, msglen)
-                if serialization != b"n":
-                    try:
-                        if serialization == b"d":  # dill serialization
-                            msg = dill.loads(msg)
-                        elif serialization == b"j":  # json serialization
-                            msg = json.loads(msg.decode("utf-8"))
-                        elif serialization == b"u":  # utf-8 serialization
-                            msg = msg.decode("utf-8")
-                        else:
-                            print("Unrecognized serialization type: %r" % serialization)
-                            continue
-                    except (UnicodeDecodeError, ValueError) as e:
-                        print(
-                            "Error de-serializing message: %s \n %s"
-                            % (msg, traceback.format_exc(e))
-                        )
-                        continue
+            print(
+                "Received message, length %d, serialization %r"
+                % (msglen, serialization)
+            )
+        if serialization != b"n":
+            try:
+                if serialization == b"d":  # dill serialization
+                    msg = dill.loads(msg)
+                elif serialization == b"j":  # json serialization
+                    msg = json.loads(msg.decode("utf-8"))
+                elif serialization == b"u":  # utf-8 serialization
+                    msg = msg.decode("utf-8")
+                else:
+                    print("Unrecognized serialization type: %r" % serialization)
+                    return
                 self.queue.put(msg)
-        except RuntimeError:
-            if self.verbose:
-                print("Client socket: " + str(address) + " closed")
-
-    def receive_msg(self, client, msglen):
-        msg = b""
-        while len(msg) < msglen:
-            chunk = client.recv(msglen - len(msg))
-            if not chunk:
-                raise RuntimeError("socket connection broken")
-            msg = msg + chunk
-        return msg
+            except (UnicodeDecodeError, ValueError) as e:
+                print(
+                    "Error de-serializing message: %s \n %s"
+                    % (msg, traceback.format_exc(e))
+                )
 
     def close(self):
-        self.sock.close()
+        self._sio.disconnect()
 
 
 class clientsocket:
@@ -172,7 +122,7 @@ class clientsocket:
         self._sio.send(msg)
 
     def close(self):
-        pass
+        self._sio.disconnect()
 
 
 def main():
