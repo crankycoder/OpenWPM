@@ -112,6 +112,8 @@ class TaskManager:
         self.loggingserver = self._launch_loggingserver()
         # socket location: (address, port)
         self.manager_params['logger_address'] = self.logging_status_queue.get()
+        import pdb
+        pdb.set_trace()
         self.logger = MPLogger.loggingclient(
             *self.manager_params['logger_address'])
 

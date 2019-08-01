@@ -39,6 +39,7 @@ class serversocket:
             # TODO: this is not the right thing to do. need to extract
             # the host and port
             print("Server bound to: " + str(self.start_server))
+        return ('0.0.0.0', 5000)
 
     async def _websocket_handler(self, websocket, path):
         """

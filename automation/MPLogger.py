@@ -79,10 +79,10 @@ def loggingserver(log_file, status_queue):
 
     # Sets up the serversocket to start accepting connections
     sock = serversocket(name="loggingserver")
+    sockname = sock.start_accepting()
     status_queue.put(
-        "Websocket server started"
+        sockname
     )  # sock.sock.getsockname())  # let TM know location
-    sock.start_accepting()
 
     while True:
         # Check for KILL command from TaskManager
