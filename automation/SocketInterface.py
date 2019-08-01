@@ -1,12 +1,12 @@
 from __future__ import absolute_import, print_function
 
+import asyncio
 import json
 import struct
 import traceback
 
 import dill
-import eventlet
-import socketio
+import websockets
 import six
 from six.moves import input
 from six.moves.queue import Queue
@@ -15,10 +15,6 @@ if six.PY2:
 
     class ConnectionAbortedError(Exception):
         pass
-
-
-# TODO - Implement a cleaner shutdown for server socket
-# see: https://stackoverflow.com/a/1148237
 
 
 class serversocket:
@@ -31,20 +27,24 @@ class serversocket:
         self.verbose = verbose
         self.name = name
         self.queue = Queue()
-        if self.verbose:
-            print("Server bound to: " + str(self.sock.getsockname()))
-        self._sio = socketio.Server()
 
     def start_accepting(self):
         """ Start the listener thread """
-        self._sio_app = socketio.WSGIApp(self._sio)
+        start_server = websockets.serve(self._websocket_handler, "0.0.0.0", 5000)
 
-        # TODO: host/port for socketio server needs to be extracted
-        # using python-decouple
-        eventlet.wsgi.server(eventlet.listen(("", 5000)), self._sio_app)
+        asyncio.get_event_loop().run_until_complete(start_server)
+        asyncio.get_event_loop().run_forever()
 
-    @sio.event
-    def handle_message(self, sid, msg):
+        if self.verbose:
+            # TODO: this is not the right thing to do. need to extract
+            # the host and port
+            print("Server bound to: " + str(self.start_server))
+
+    async def _websocket_handler(self, websocket, path):
+        """
+        This is the sole handler for websocket messages.
+        """
+        msg = await websocket.recv()
         msglen, serialization = struct.unpack(">Lc", msg)
         if self.verbose:
             print(
@@ -70,7 +70,7 @@ class serversocket:
                 )
 
     def close(self):
-        self._sio.disconnect()
+        asyncio.get_event_loop().stop()
 
 
 class clientsocket:
@@ -86,13 +86,18 @@ class clientsocket:
             raise ValueError("Unsupported serialization type: %s" % serialization)
         self.serialization = serialization
         self.verbose = verbose
-
-        self._sio = socketio.Client()
+        self._websock = None
 
     def connect(self, host, port):
         if self.verbose:
             print("Connecting to: %s:%i" % (host, port))
-        self._sio.connect("http://{}:{}".format(host, port))
+        self._uri = "ws://{}:{}".format(host, port)
+
+    async def _send_msg(self, uri, msg, serialization):
+        # prepend with message length
+        packed_msg = struct.pack(">Lc", len(msg), serialization) + msg
+        async with websockets.connect(self._uri) as websock:
+            await websock.send(packed_msg)
 
     def send(self, msg):
         """
@@ -117,12 +122,17 @@ class clientsocket:
         if self.verbose:
             print("Sending message with serialization %s" % serialization)
 
-        # prepend with message length
-        msg = struct.pack(">Lc", len(msg), serialization) + msg
-        self._sio.send(msg)
+        # Build a new function to pass into the event loop so we can
+        # send asynchronously
+
+        asyncio.get_event_loop().run_until_complete(
+            self._send_msg(self._uri, msg, serialization)
+        )
 
     def close(self):
-        self._sio.disconnect()
+        # Closing the socket is no longer necessary as the websockets
+        # API when the coroutine returns after sending
+        pass
 
 
 def main():
